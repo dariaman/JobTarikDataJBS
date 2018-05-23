@@ -14,12 +14,13 @@ namespace JobTarikDataJBS
 
         static void Main(string[] args)
         {
-
+            SendEmail(EmailAdmin, "Job JBS", "Running Mode . . . ");
             var NextJob = new List<ScheduleJobModel>();
             var JobExec = new List<ScheduleJobLogModel>();
+
             try
             {
-                NextJob = poolJob();
+                NextJob = poolJobMaster(); // Pool Job Master
             }
             catch (Exception ex)
             {
@@ -29,7 +30,7 @@ namespace JobTarikDataJBS
 
             try
             {
-                PrepareInsertJobExec(NextJob);
+                PrepareInsertJobExec(NextJob); // Insert Job Log
             }
             catch (Exception ex)
             {
@@ -39,7 +40,7 @@ namespace JobTarikDataJBS
 
             try
             {
-                JobExec = poolJobExec();
+                JobExec = poolJobExec(); // Pool Job For Exec
             }
             catch (Exception ex)
             {
@@ -61,7 +62,7 @@ namespace JobTarikDataJBS
             System.Threading.Thread.Sleep(5000);
         }
 
-        private static List<ScheduleJobModel> poolJob()
+        private static List<ScheduleJobModel> poolJobMaster()
         {
             var job = new List<ScheduleJobModel>();
             MySqlConnection con = new MySqlConnection(conString);
@@ -90,7 +91,7 @@ namespace JobTarikDataJBS
             }
             catch (Exception ex)
             {
-                throw new Exception("poolJob() : " + ex.Message);
+                throw new Exception("poolJobMaster() : " + ex.Message);
             }
             finally
             {
@@ -105,8 +106,11 @@ namespace JobTarikDataJBS
             var job = new List<ScheduleJobLogModel>();
             MySqlConnection con = new MySqlConnection(conString);
             MySqlCommand cmd;
-            cmd = new MySqlCommand(@"SELECT * FROM `ScheduleJobLog` sl WHERE sl.`IsExecute`=0 ORDER BY sl.`id`;", con);
-            cmd.CommandType = CommandType.Text;
+            cmd = new MySqlCommand(@"SELECT * FROM `ScheduleJobLog` sl WHERE sl.`IsExecute`=0 ORDER BY sl.`id`;")
+            {
+                CommandType = CommandType.Text,
+                Connection=con
+            };
             try
             {
                 con.Open();
@@ -149,17 +153,24 @@ namespace JobTarikDataJBS
                         if (job.waktuExecute == null) throw new Exception(" tanggal StepHour dan waktuExec sama-sama kosong");
                         if (DateTime.Now.Hour < job.waktuExecute) continue; //belum jam eksekusi
                     }
-                    else // eksekusi dengan interval tertentu
+                    else // eksekusi dengan interval tertentu (Step Hour)
                     {
                         if (DateTime.Now.Hour == 0)
                         {
                             InsertJobQueue(job); // jam 00 awal dari eksekusi job yg interval (gak bisa lolos dari validasi)
                             continue;
                         }
-                        if (DateTime.Now.Hour % job.StepHour != 0) continue; // belum jam eksekusi
+                        else
+                        {
+                            // masukkan jadwal terakhir seharusnya jalan, 
+                            // karena kalau sebelumnya gagal, bisa gak tereksekusi lg sampai jadwal berikutnya
+                            var waktu = (DateTime.Now.Hour == 0 )? 0 : (job.StepHour == 0 ? 0 : (DateTime.Now.Hour / job.StepHour) * job.StepHour);
+                            job.waktuExecute = waktu;
+                            InsertJobQueue(job); 
+                            continue;
+                        }
                     }
-
-                    if ((job.StepHour == null) && (DateTime.Now.Hour != job.waktuExecute)) continue; //belum jam eksekusi
+                    if ((job.StepHour == null) && (DateTime.Now.Hour < job.waktuExecute)) continue; //belum jam eksekusi
                 }
                 else if (job.IsMonthly) // cek job monthly
                 {
@@ -185,45 +196,59 @@ namespace JobTarikDataJBS
                 try
                 {
                     /// Update tuk buat start date
-                    cmd = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`StartDate`=NOW() WHERE sl.`id`=@id;", con);
-                    cmd.CommandType = CommandType.Text;
+                    cmd = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`StartDate`=NOW() WHERE sl.`id`=@id;")
+                    {
+                        CommandType = CommandType.Text,
+                        Connection = con,
+                    };
                     cmd.Parameters.Clear();
                     cmd.Parameters.Add(new MySqlParameter("@id", MySqlDbType.Int32) { Value = job.id });
-                    con.Open();
+                    cmd.Connection.Open();
                     cmd.ExecuteNonQuery();
-                    con.Close();
+                    cmd.Connection.Close();
 
                     // exec SP Job
-                    cmd = new MySqlCommand(job.spName, con);
-                    cmd.CommandType = CommandType.StoredProcedure;
+                    cmd = new MySqlCommand(job.spName)
+                    {
+                        CommandType = CommandType.StoredProcedure,
+                        Connection = con
+                    };
                     cmd.Parameters.Clear();
-                    con.Open();
+                    cmd.Connection.Open();
                     cmd.ExecuteNonQuery();
-                    con.Close();
+                    cmd.Connection.Close();
 
                     /// Update tuk buat END date dan IsExec
-                    cmd = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`FinishDate`=NOW(),sl.`IsExecute`=1 WHERE sl.`id`=@id;", con);
-                    cmd.CommandType = CommandType.Text;
+                    cmd = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`FinishDate`=NOW(),sl.`IsExecute`=1 WHERE sl.`id`=@id;")
+                    {
+                        CommandType = CommandType.Text,
+                        Connection = con
+                    };
                     cmd.Parameters.Clear();
                     cmd.Parameters.Add(new MySqlParameter("@id", MySqlDbType.Int32) { Value = job.id });
-                    con.Open();
+                    if (con.State == ConnectionState.Open) con.Close();
+                    cmd.Connection.Open();
                     cmd.ExecuteNonQuery();
-                    con.Close();
+                    cmd.Connection.Close();
+
                 }
                 catch (Exception ex)
                 {
                     if (con.State == ConnectionState.Open) con.Close();
                     /// Update tuk buat END date dan IsExec
-                    cmdP = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`Note`=@note WHERE sl.`id`=@id;", conP);
-                    cmdP.CommandType = CommandType.Text;
+                    cmdP = new MySqlCommand(@"UPDATE `ScheduleJobLog` sl SET sl.`Note`=@note WHERE sl.`id`=@id;")
+                    {
+                        CommandType = CommandType.Text,
+                        Connection = conP
+                    };
                     cmdP.Parameters.Clear();
                     cmdP.Parameters.Add(new MySqlParameter("@id", MySqlDbType.Int32) { Value = job.id });
                     cmdP.Parameters.Add(new MySqlParameter("@note", MySqlDbType.VarChar) { Value = ex.Message });
-                    conP.Open();
+                    cmdP.Connection.Open();
                     cmdP.ExecuteNonQuery();
-                    conP.Close();
+                    cmdP.Connection.Close();
 
-                    SendEmail(EmailAdmin, "Error Job JBS (JobExecution) ", ex.Message);
+                    SendEmail(EmailAdmin, "Error Job JBS (JobExecution >>> "+ job.spName + ") ", ex.Message);
                     return;
                 }
                 finally
@@ -236,18 +261,22 @@ namespace JobTarikDataJBS
 
         private static void SendEmail(string EmailTo, string Subject, string Body)
         {
-            SmtpClient mailClient = new SmtpClient();
-            mailClient.Host = "mail.caf.co.id";
-            mailClient.UseDefaultCredentials = true;
-            mailClient.Port = 25;
+            SmtpClient mailClient = new SmtpClient
+            {
+                Host = "mail.caf.co.id",
+                UseDefaultCredentials = true,
+                Port = 25
+            };
 
             MailAddress from = new MailAddress("no-reply@jagadiri.co.id");
             MailAddress to = new MailAddress(EmailTo);
 
-            MailMessage message = new MailMessage(from, to);
-            message.IsBodyHtml = true;
-            message.Subject = Subject;
-            message.Body = Body;
+            MailMessage message = new MailMessage(from, to)
+            {
+                IsBodyHtml = true,
+                Subject = Subject,
+                Body = Body
+            };
 
             mailClient.Send(message);
 
@@ -257,8 +286,11 @@ namespace JobTarikDataJBS
         {
             MySqlConnection con = new MySqlConnection(conString);
             MySqlCommand cmd;
-            cmd = new MySqlCommand(@"InsertScheduleJobLog", con);
-            cmd.CommandType = CommandType.StoredProcedure;
+            cmd = new MySqlCommand(@"InsertScheduleJobLog")
+            {
+                CommandType = CommandType.StoredProcedure,
+                Connection = con
+            };
             cmd.Parameters.Clear();
             cmd.Parameters.Add(new MySqlParameter("@SkedulJobID", MySqlDbType.Int32) { Value = job.id });
             cmd.Parameters.Add(new MySqlParameter("@sp", MySqlDbType.VarChar) { Value = job.spName });
